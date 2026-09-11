@@ -141,6 +141,9 @@ class IROptimizer {
 
         /** @private @type {TypeState | null} The state the analyzed script could exit in */
         this.exitState = null;
+
+        /** @private @type {IntermediateScript[]} A stack of the current scripts being optimized */
+        this.optimizationStack = [];
     }
 
     /**
@@ -150,13 +153,25 @@ class IROptimizer {
      */
     getInputType (inputBlock, state) {
         const inputs = inputBlock.inputs;
-
+        const script = this.optimizationStack.at(-1);
         switch (inputBlock.opcode) {
         case InputOpcode.VAR_GET:
-            return state.getVariableType(inputs.variable);
+            // Todo: Check procedures for types recursively?
+            return state.getVariableType(inputs.variable) & script.getVariableHint(inputs.variable.id);
+        
+        case InputOpcode.LIST_GET:
+            // Todo: Check procedures for types recursively?
+            // Determining type information for lists would be a pain so we just trust what the type hint says.
+            // console.log(this.ir.entry.getVariableHint(inputs.list.id), this.ir.entry);
+            // current procedure isn't stored, this won't work
+            return InputType.ANY & script.getVariableHint(inputs.list.id);
 
         case InputOpcode.ADDON_CALL:
             break;
+        
+        case InputOpcode.PROCEDURE_ARGUMENT: {
+            return InputType.ANY & script.getArgumentHint(script.arguments[inputs.index]);
+        }
 
         case InputOpcode.CAST_BOOLEAN: {
             const innerType = inputs.target.type;
@@ -321,10 +336,13 @@ class IROptimizer {
             let resultType = 0;
 
             const canBeNaN = function () {
-                // (-)Infinity * 0 = NaN
-                if ((leftType & InputType.NUMBER_INF) && (rightType & InputType.NUMBER_ANY_ZERO)) return true;
-                // 0 * (-)Infinity = NaN
-                if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_INF)) return true;
+                if (!script?.relaxedMath) {
+                    // (-)Infinity * 0 = NaN
+                    if ((leftType & InputType.NUMBER_INF) && (rightType & InputType.NUMBER_ANY_ZERO)) return true;
+                    // 0 * (-)Infinity = NaN
+                    if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_INF)) return true;
+                }
+
             };
             if (canBeNaN()) resultType |= InputType.NUMBER_NAN;
 
@@ -406,12 +424,15 @@ class IROptimizer {
             let resultType = 0;
 
             const canBeNaN = function () {
-                // (-)0 / (-)0 = NaN
-                if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_ANY_ZERO)) return true;
-                // (-)Infinity / (-)Infinity = NaN
-                if ((leftType & InputType.NUMBER_INF) && (rightType & InputType.NUMBER_INF)) return true;
-                // (-)0 / NaN = NaN
-                if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_NAN)) return true;
+                if (!script?.relaxedMath) {
+                    // These relaxations are a bit dangerous and completely arbitrary. I just don't like how easy it is for NaN to come from divison.
+                    // (-)0 / (-)0 = NaN
+                    if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_ANY_ZERO)) return true;
+                    // (-)0 / NaN = NaN
+                    if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_NAN)) return true;
+                    // (-)Infinity / (-)Infinity = NaN
+                    if ((leftType & InputType.NUMBER_INF) && (rightType & InputType.NUMBER_INF)) return true;
+                }
             };
             if (canBeNaN()) resultType |= InputType.NUMBER_NAN;
 
@@ -428,10 +449,12 @@ class IROptimizer {
                 if ((leftType & InputType.NUMBER_NEG) && (rightType & InputType.NUMBER_ZERO)) return true;
                 // POS / -0 = -Infinity
                 if ((leftType & InputType.NUMBER_POS) && (rightType & InputType.NUMBER_NEG_ZERO)) return true;
-                // NEG_REAL / POS_REAL ~= -Infinity
-                if ((leftType & InputType.NUMBER_NEG_REAL) && (rightType & InputType.NUMBER_POS_REAL)) return true;
-                // POS_REAL / NEG_REAL ~= -Infinity
-                if ((leftType & InputType.NUMBER_POS_REAL) && (rightType & InputType.NUMBER_NEG_REAL)) return true;
+                if (!script?.relaxedMath) {
+                    // NEG_REAL / POS_REAL ~= -Infinity
+                    if ((leftType & InputType.NUMBER_NEG_REAL) && (rightType & InputType.NUMBER_POS_REAL)) return true;
+                    // POS_REAL / NEG_REAL ~= -Infinity
+                    if ((leftType & InputType.NUMBER_POS_REAL) && (rightType & InputType.NUMBER_NEG_REAL)) return true;
+                }
             };
             if (canBeNegInfinity()) resultType |= InputType.NUMBER_NEG_INF;
 
@@ -440,10 +463,12 @@ class IROptimizer {
                 if ((leftType & InputType.NUMBER_POS) && (rightType & InputType.NUMBER_ZERO)) return true;
                 // NEG / -0 = Infinity
                 if ((leftType & InputType.NUMBER_NEG) && (rightType & InputType.NUMBER_NEG_ZERO)) return true;
-                // POS_REAL / POS_REAL ~= Infinity
-                if ((leftType & InputType.NUMBER_POS_REAL) && (rightType & InputType.NUMBER_POS_REAL)) return true;
-                // NEG_REAL / NEG_REAL ~= Infinity
-                if ((leftType & InputType.NUMBER_NEG_REAL) && (rightType & InputType.NUMBER_NEG_REAL)) return true;
+                if (!script?.relaxedMath) {
+                    // POS_REAL / POS_REAL ~= Infinity
+                    if ((leftType & InputType.NUMBER_POS_REAL) && (rightType & InputType.NUMBER_POS_REAL)) return true;
+                    // NEG_REAL / NEG_REAL ~= Infinity
+                    if ((leftType & InputType.NUMBER_NEG_REAL) && (rightType & InputType.NUMBER_NEG_REAL)) return true;
+                }
             };
             if (canBeInfinity()) resultType |= InputType.NUMBER_POS_INF;
 
@@ -802,6 +827,7 @@ class IROptimizer {
             }
             alreadyOptimized.add(script.procedureCode);
         }
+        this.optimizationStack.push(script);
 
         for (const procVariant of script.dependedProcedures) {
             this.optimizeScript(this.ir.procedures[procVariant], alreadyOptimized);
@@ -815,6 +841,7 @@ class IROptimizer {
         script.cachedAnalysisEndState = this.exitState;
 
         this.optimizeStack(script.stack, new TypeState());
+        this.optimizationStack.pop();
     }
 
     optimize () {

@@ -7,7 +7,6 @@ const JSGenerator = require('./jsgen');
 const compile = (/** @type {import("../engine/thread")} */ thread) => {
     const irGenerator = new IRGenerator(thread);
     const ir = irGenerator.generate();
-
     const irOptimizer = new IROptimizer(ir);
     irOptimizer.optimize();
 

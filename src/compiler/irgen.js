@@ -237,7 +237,12 @@ class ScriptTreeGenerator {
             if (index === -1) {
                 return this.createConstantInput(0);
             }
-            return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY, {index});
+            console.log(this.script.argumentTypes.get(name), name, this.script.argumentTypes);
+            return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY & (this.script.argumentTypes.get(name) ?? InputType.ANY),
+            {
+                index,
+                procCode: this.script.procedureCode
+            });
         }
         case 'argument_reporter_boolean': {
             // see argument_reporter_string_number above
@@ -249,18 +254,28 @@ class ScriptTreeGenerator {
                 }
                 return this.createConstantInput(0);
             }
-            return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY, {index});
+            return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY & (this.script.argumentTypes.get(name) ?? InputType.ANY),
+            {
+                index,
+                procCode: this.script.procedureCode
+            });
         }
 
-        case 'data_variable':
-            return new IntermediateInput(InputOpcode.VAR_GET, InputType.ANY, {
-                variable: this.descendVariable(block, 'VARIABLE', SCALAR_TYPE)
+        case 'data_variable': {
+            const variable = this.descendVariable(block, 'VARIABLE', SCALAR_TYPE)
+            return new IntermediateInput(InputOpcode.VAR_GET, InputType.ANY & this.script.getVariableHint(variable.id), {
+                variable
             });
-        case 'data_itemoflist':
-            return new IntermediateInput(InputOpcode.LIST_GET, InputType.ANY, {
-                list: this.descendVariable(block, 'LIST', LIST_TYPE),
+        }
+
+        case 'data_itemoflist': {
+            const list = this.descendVariable(block, 'LIST', LIST_TYPE);
+            return new IntermediateInput(InputOpcode.LIST_GET, InputType.ANY & this.script.getVariableHint(list.id), {
+                list,
                 index: this.descendInputOfBlock(block, 'INDEX')
             });
+        }
+
         case 'data_lengthoflist':
             return new IntermediateInput(InputOpcode.LIST_LENGTH, InputType.NUMBER_POS_INT | InputType.NUMBER_ZERO, {
                 list: this.descendVariable(block, 'LIST', LIST_TYPE)
@@ -713,7 +728,7 @@ class ScriptTreeGenerator {
             return new IntermediateStackBlock(StackOpcode.VAR_SET, {
                 variable,
                 value: new IntermediateInput(InputOpcode.OP_ADD, InputType.NUMBER_OR_NAN, {
-                    left: new IntermediateInput(InputOpcode.VAR_GET, InputType.ANY, {variable}).toType(InputType.NUMBER),
+                    left: new IntermediateInput(InputOpcode.VAR_GET, InputType.ANY & this.script.getVariableHint(variable.id), {variable}).toType(InputType.NUMBER),
                     right: this.descendInputOfBlock(block, 'VALUE').toType(InputType.NUMBER)
                 })
             });
@@ -1331,24 +1346,88 @@ class ScriptTreeGenerator {
 
         const text = comment.text;
 
-        for (const line of text.split('\n')) {
-            if (!/^tw\b/.test(line)) {
-                continue;
+        // Possibly todo (type hinting):
+        // This could probably be moved to the constructor, or maybe global scope.
+        // Also, this might be a bit overkill just for determining if a type hint is valid.
+        // We could just use the steps inside of the test condition to determine if it's valid
+        // or maybe even just fix the regular expression so that it can extract the hints.
+        const inputTypes = Object.keys(InputType);
+        let numTypes = inputTypes.length;
+        for (let i = 0; i < numTypes; i++) {
+            const type = inputTypes[i];
+            // Todo: Test if STRING_BOOLEAN is okay
+            // The compiler uses types to determine if an input should be sanitized
+            // We don't allow setting NEVER_STRING and its friends to prevent code injection
+            if (type !== 'STRING' && type !== 'STRING_NAN' && type !== 'STRING_BOOLEAN' && type !== 'ANY') {
+                inputTypes.push(`NEVER_${type}`);
             }
-
-            const flags = line.split(' ');
-            for (const flag of flags) {
-                switch (flag) {
-                case 'nocompile':
-                    throw new Error('Script explicitly disables compilation');
-                case 'stuck':
-                    this.script.warpTimer = true;
-                    break;
+        }
+        const allowedTypeHints = inputTypes.join('|');
+        const typeHintRegex = new RegExp(`^(typehint|argument_typehint):(${allowedTypeHints})(\\|(?:${allowedTypeHints}))*\\b`);
+        
+        for (const line of text.split('\n')) {
+            if (/^tw\b/.test(line)) {
+                const flags = line.split(' ');
+                for (const flag of flags) {
+                    switch (flag) {
+                    case 'nocompile':
+                        throw new Error('Script explicitly disables compilation');
+                    case 'stuck':
+                        this.script.warpTimer = true;
+                        break;
+                    case 'nocast':
+                        this.script.disableCast = true;
+                        break;
+                    case 'allowcast':
+                        this.script.disableCast = false;
+                        break;
+                    case 'relaxedmath':
+                        this.script.relaxedMath = true;
+                        break;
+                    case 'strictmath':
+                        this.script.relaxedMath = false;
+                        break;
+                    }
                 }
             }
+            else if (typeHintRegex.test(line)) {
+                const isArgHint = line.startsWith("argument_typehint");
+                if (isArgHint && !this.script.isProcedure) {
+                    console.error("Received procedure argument type hint but current script is not a procedure!");
+                    continue;
+                }
+                
 
-            // Only the first 'tw' line is parsed.
-            break;
+                const sliceIndex = line.indexOf(' ');
+                const hintString = line.slice(0, sliceIndex);
+                const varName = line.slice(sliceIndex+1);
+                let type = 0;
+
+                const hints = hintString.slice(isArgHint ? 18 : 9).split('|');
+                console.log(hints, hintString.slice(18))
+                for (const hint of hints) {
+                    // @ts-ignore
+                    if (hint.startsWith('NEVER_')) type = type & ~(InputType[hint.slice(6)]); // Remove a possible type from the field
+                    // @ts-ignore
+                    else type = type | InputType[hint];
+                }
+
+                if (isArgHint) {       
+                    // Procedure arguments don't have ids
+                    this.script.argumentTypes.set(varName, type);          
+                }
+                else {
+                    const variable = this.target.lookupVariableByNameAndType(varName, Variable.SCALAR_TYPE) ?? this.target.lookupVariableByNameAndType(varName, Variable.LIST_TYPE); // Todo: List support
+                    if (!variable) {
+                        // Todo: Make this clearer somehow. This would be a really annoying bug to go unnoticed.
+                        console.error("Received invalid variable name in type hint!");
+                    }
+                    this.script.variableTypes.set(variable.id, type);   
+                }
+
+            }
+
+
         }
     }
 
@@ -1411,6 +1490,8 @@ class ScriptTreeGenerator {
         this.blocks.populateProcedureCache();
 
         this.script.topBlockId = topBlockId;
+        this.script.relaxedMath = this.runtime.compilerOptions.relaxedMath;
+        this.script.disableCast = this.runtime.compilerOptions.disableCastGlobal;
 
         const topBlock = this.getBlockById(topBlockId);
         if (!topBlock) {
