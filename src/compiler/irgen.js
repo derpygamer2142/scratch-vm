@@ -239,10 +239,10 @@ class ScriptTreeGenerator {
             }
             console.log(this.script.argumentTypes.get(name), name, this.script.argumentTypes);
             return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY & (this.script.argumentTypes.get(name) ?? InputType.ANY),
-            {
-                index,
-                procCode: this.script.procedureCode
-            });
+                {
+                    index,
+                    procCode: this.script.procedureCode
+                });
         }
         case 'argument_reporter_boolean': {
             // see argument_reporter_string_number above
@@ -255,14 +255,14 @@ class ScriptTreeGenerator {
                 return this.createConstantInput(0);
             }
             return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY & (this.script.argumentTypes.get(name) ?? InputType.ANY),
-            {
-                index,
-                procCode: this.script.procedureCode
-            });
+                {
+                    index,
+                    procCode: this.script.procedureCode
+                });
         }
 
         case 'data_variable': {
-            const variable = this.descendVariable(block, 'VARIABLE', SCALAR_TYPE)
+            const variable = this.descendVariable(block, 'VARIABLE', SCALAR_TYPE);
             return new IntermediateInput(InputOpcode.VAR_GET, InputType.ANY & this.script.getVariableHint(variable.id), {
                 variable
             });
@@ -1336,6 +1336,94 @@ class ScriptTreeGenerator {
         return !this.script.isWarp || this.script.warpTimer;
     }
 
+    /**
+     * Add the type hints from the given objects to this generator
+     * @param {Map<string, InputType>} variableTypes
+     */
+    mergeTypeHints (variableTypes) {
+        variableTypes.forEach((value, key) => {
+            this.script.variableTypes.set(key, value);
+        });
+
+        // There's not really a reason to merge argument type hints.
+    }
+
+    tryInsertTypehint (line) {
+        // Insert the hint from the given type hint if it's valid
+
+        // Possibly todo:
+        // This could probably be moved to the constructor, or maybe global scope.
+        // Also, this might be a bit overkill just for determining if a type hint is valid.
+        // We could just use the steps inside of the test condition to determine if it's valid
+        // or maybe even just fix the regular expression so that it can extract the hints.
+        const inputTypes = Object.keys(InputType);
+        const numTypes = inputTypes.length;
+        for (let i = 0; i < numTypes; i++) {
+            const type = inputTypes[i];
+            // Todo: Test if STRING_BOOLEAN is okay
+            // The compiler uses types to determine if an input should be sanitized.
+            // As such, we don't allow setting NEVER_STRING or its friends to prevent code injection.
+            if (type !== 'STRING' && type !== 'STRING_NAN' && type !== 'STRING_BOOLEAN' && type !== 'ANY') {
+                inputTypes.push(`NEVER_${type}`);
+            }
+        }
+        const allowedTypeHints = inputTypes.join('|');
+        const typeHintRegex = new RegExp(`^(typehint|argument_typehint):(${allowedTypeHints})(\\|(?:${allowedTypeHints}))*\\b`);
+
+        if (!typeHintRegex.test(line)) return false;
+
+
+        const isArgHint = line.startsWith('argument_typehint');
+        if (isArgHint && !this.script.isProcedure) {
+            console.error('Received procedure argument type hint but current script is not a procedure!');
+            return false;
+        }
+
+
+        const sliceIndex = line.indexOf(' ');
+        const hintString = line.slice(0, sliceIndex);
+        let varName = line.slice(sliceIndex + 1);
+        let type = 0;
+
+        if (isArgHint) {
+            // Procedure arguments don't have ids, we store the name instead.
+            if (!this.script.arguments.includes(varName)) {
+                // Todo: Make this clearer somehow. This would be a really annoying bug to go unnoticed.
+                console.error('Received invalid argument name in type hint!');
+                return false;
+            }
+            type = this.script.argumentTypes.get(varName) ?? type;
+        } else {
+            const variable = this.target.lookupVariableByNameAndType(varName, Variable.SCALAR_TYPE) ?? this.target.lookupVariableByNameAndType(varName, Variable.LIST_TYPE);
+            if (!variable) {
+                // Todo: Ditto.
+                console.error('Received invalid variable name in type hint!');
+                return false;
+            }
+            varName = variable.id;
+            type = this.script.variableTypes.get(varName) ?? type;
+        }
+
+
+        const hints = hintString.slice(isArgHint ? 18 : 9).split('|');
+        console.log(hints, hintString.slice(18));
+        for (const hint of hints) {
+            // @ts-ignore
+            if (hint.startsWith('NEVER_')) type = type & ~(InputType[hint.slice(6)]); // Remove a possible type from the field
+            // @ts-ignore
+            else type = type | InputType[hint];
+        }
+
+        if (isArgHint) {
+            this.script.argumentTypes.set(varName, type);
+            return true;
+        }
+        this.script.variableTypes.set(varName, type);
+        return true;
+
+
+    }
+
     readTopBlockComment (commentId) {
         const comment = this.target.comments[commentId];
         if (!comment) {
@@ -1346,27 +1434,9 @@ class ScriptTreeGenerator {
 
         const text = comment.text;
 
-        // Possibly todo (type hinting):
-        // This could probably be moved to the constructor, or maybe global scope.
-        // Also, this might be a bit overkill just for determining if a type hint is valid.
-        // We could just use the steps inside of the test condition to determine if it's valid
-        // or maybe even just fix the regular expression so that it can extract the hints.
-        const inputTypes = Object.keys(InputType);
-        let numTypes = inputTypes.length;
-        for (let i = 0; i < numTypes; i++) {
-            const type = inputTypes[i];
-            // Todo: Test if STRING_BOOLEAN is okay
-            // The compiler uses types to determine if an input should be sanitized
-            // We don't allow setting NEVER_STRING and its friends to prevent code injection
-            if (type !== 'STRING' && type !== 'STRING_NAN' && type !== 'STRING_BOOLEAN' && type !== 'ANY') {
-                inputTypes.push(`NEVER_${type}`);
-            }
-        }
-        const allowedTypeHints = inputTypes.join('|');
-        const typeHintRegex = new RegExp(`^(typehint|argument_typehint):(${allowedTypeHints})(\\|(?:${allowedTypeHints}))*\\b`);
-        
         for (const line of text.split('\n')) {
-            if (/^tw\b/.test(line)) {
+            if (this.tryInsertTypehint(line)) continue;
+            else if (/^tw\b/.test(line)) {
                 const flags = line.split(' ');
                 for (const flag of flags) {
                     switch (flag) {
@@ -1389,42 +1459,6 @@ class ScriptTreeGenerator {
                         break;
                     }
                 }
-            }
-            else if (typeHintRegex.test(line)) {
-                const isArgHint = line.startsWith("argument_typehint");
-                if (isArgHint && !this.script.isProcedure) {
-                    console.error("Received procedure argument type hint but current script is not a procedure!");
-                    continue;
-                }
-                
-
-                const sliceIndex = line.indexOf(' ');
-                const hintString = line.slice(0, sliceIndex);
-                const varName = line.slice(sliceIndex+1);
-                let type = 0;
-
-                const hints = hintString.slice(isArgHint ? 18 : 9).split('|');
-                console.log(hints, hintString.slice(18))
-                for (const hint of hints) {
-                    // @ts-ignore
-                    if (hint.startsWith('NEVER_')) type = type & ~(InputType[hint.slice(6)]); // Remove a possible type from the field
-                    // @ts-ignore
-                    else type = type | InputType[hint];
-                }
-
-                if (isArgHint) {       
-                    // Procedure arguments don't have ids
-                    this.script.argumentTypes.set(varName, type);          
-                }
-                else {
-                    const variable = this.target.lookupVariableByNameAndType(varName, Variable.SCALAR_TYPE) ?? this.target.lookupVariableByNameAndType(varName, Variable.LIST_TYPE); // Todo: List support
-                    if (!variable) {
-                        // Todo: Make this clearer somehow. This would be a really annoying bug to go unnoticed.
-                        console.error("Received invalid variable name in type hint!");
-                    }
-                    this.script.variableTypes.set(variable.id, type);   
-                }
-
             }
 
 
@@ -1543,7 +1577,7 @@ class IRGenerator {
         this.analyzedProcedures = new Set();
     }
 
-    addProcedureDependencies (dependencies) {
+    addProcedureDependencies (dependencies, parent) {
         for (const procedureVariant of dependencies) {
             if (Object.prototype.hasOwnProperty.call(this.procedures, procedureVariant)) {
                 continue;
@@ -1556,7 +1590,7 @@ class IRGenerator {
             }
             const procedureCode = parseProcedureCode(procedureVariant);
             const definition = this.blocks.getProcedureDefinition(procedureCode);
-            this.proceduresToCompile.set(procedureVariant, definition);
+            this.proceduresToCompile.set(procedureVariant, [definition, parent]); // We pass the parent so that we can inherit type hints.
         }
     }
 
@@ -1567,7 +1601,7 @@ class IRGenerator {
      */
     generateScriptTree (generator, topBlockId) {
         const result = generator.generate(topBlockId);
-        this.addProcedureDependencies(result.dependedProcedures);
+        this.addProcedureDependencies(result.dependedProcedures, result);
         return result;
     }
 
@@ -1601,7 +1635,16 @@ class IRGenerator {
      * @returns {IntermediateRepresentation} Intermediate representation.
      */
     generate () {
-        const entry = this.generateScriptTree(new ScriptTreeGenerator(this.thread), this.thread.topBlock);
+        const stg = new ScriptTreeGenerator(this.thread);
+        // Find global type hints.
+        // We reparse this instead of caching on the Target because it's not terribly expensive.
+        Object.values(this.thread.target.comments).forEach(comment => {
+            if (comment.blockId) return; // We're only looking for hints not connected to any hat.
+            for (const line of comment.text.split('\n')) {
+                stg.tryInsertTypehint(line);
+            }
+        });
+        const entry = this.generateScriptTree(stg, this.thread.topBlock);
 
         // Compile any required procedures.
         // As procedures can depend on other procedures, this process may take several iterations.
@@ -1610,14 +1653,15 @@ class IRGenerator {
             this.compilingProcedures = this.proceduresToCompile;
             this.proceduresToCompile = new Map();
 
-            for (const [procedureVariant, definitionId] of this.compilingProcedures.entries()) {
+            for (const [procedureVariant, [definitionId, parentScript]] of this.compilingProcedures.entries()) {
                 if (procedureTreeCache[procedureVariant]) {
                     const result = procedureTreeCache[procedureVariant];
                     this.procedures[procedureVariant] = result;
-                    this.addProcedureDependencies(result.dependedProcedures);
+                    this.addProcedureDependencies(result.dependedProcedures, result);
                 } else {
                     const isWarp = parseIsWarp(procedureVariant);
                     const generator = new ScriptTreeGenerator(this.thread);
+                    generator.mergeTypeHints(parentScript.variableTypes);
                     generator.setProcedureVariant(procedureVariant);
                     if (isWarp) generator.enableWarp();
                     const compiledProcedure = this.generateScriptTree(generator, definitionId);
