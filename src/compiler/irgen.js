@@ -237,7 +237,6 @@ class ScriptTreeGenerator {
             if (index === -1) {
                 return this.createConstantInput(0);
             }
-            console.log(this.script.argumentTypes.get(name), name, this.script.argumentTypes);
             return new IntermediateInput(InputOpcode.PROCEDURE_ARGUMENT, InputType.ANY & (this.script.argumentTypes.get(name) ?? InputType.ANY),
                 {
                     index,
@@ -1406,7 +1405,6 @@ class ScriptTreeGenerator {
 
 
         const hints = hintString.slice(isArgHint ? 18 : 9).split('|');
-        console.log(hints, hintString.slice(18));
         for (const hint of hints) {
             // @ts-ignore
             if (hint.startsWith('NEVER_')) type = type & ~(InputType[hint.slice(6)]); // Remove a possible type from the field
@@ -1525,7 +1523,6 @@ class ScriptTreeGenerator {
 
         this.script.topBlockId = topBlockId;
         this.script.relaxedMath = this.runtime.compilerOptions.relaxedMath;
-        this.script.disableCast = this.runtime.compilerOptions.disableCastGlobal;
 
         const topBlock = this.getBlockById(topBlockId);
         if (!topBlock) {

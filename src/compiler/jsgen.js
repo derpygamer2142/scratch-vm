@@ -179,23 +179,24 @@ class JSGenerator {
             return `(${this.descendAddonCall(node)})`;
 
         case InputOpcode.CAST_BOOLEAN:
-            return this.script.disableCast ? this.descendInput(node.target) : `toBoolean(${this.descendInput(node.target)})`;
+            // Disabling casting does not affect CAST_BOOLEAN because 'false' is a common boolean-ish value
+            return `toBoolean(${this.descendInput(node.target)})`;
         case InputOpcode.CAST_NUMBER:
-            if (this.script.disableCast) return this.descendInput(node.target);
             if (node.target.isAlwaysType(InputType.BOOLEAN_INTERPRETABLE)) {
                 return `(+${this.descendInput(node.target.toType(InputType.BOOLEAN))})`;
             }
+            if (this.script.disableCast) return `(+${this.descendInput(node.target)})`;
             if (node.target.isAlwaysType(InputType.NUMBER_OR_NAN)) {
                 return `toNotNaN(${this.descendInput(node.target)})`;
             }
             return `toNotNaN(+${this.descendInput(node.target)})`;
         case InputOpcode.CAST_NUMBER_OR_NAN:
-            return this.script.disableCast ? this.descendInput(node.target) : `(+${this.descendInput(node.target)})`;
+            return `(+${this.descendInput(node.target)})`;
         case InputOpcode.CAST_NUMBER_INDEX:
-            return this.script.disableCast ? this.descendInput(node.target) : `(${this.descendInput(node.target.toType(InputType.NUMBER_OR_NAN))} | 0)`;
-        case InputOpcode.CAST_STRING: // String casting is weird and probably needed, so we're keeping it for now
+            return this.script.disableCast ? `(+${this.descendInput(node.target)})` : `(${this.descendInput(node.target.toType(InputType.NUMBER_OR_NAN))} | 0)`;
+        case InputOpcode.CAST_STRING:
             return `("" + ${this.descendInput(node.target)})`;
-        case InputOpcode.CAST_COLOR: // This one is scary so I'm not forbidding casting here yet
+        case InputOpcode.CAST_COLOR:
             return `colorToList(${this.descendInput(node.target)})`;
 
         case InputOpcode.COMPATIBILITY_LAYER:
@@ -304,8 +305,6 @@ class JSGenerator {
         case InputOpcode.OP_EQUALS: {
             const left = node.left;
             const right = node.right;
-            // Todo: Change this to a separate flag?
-            if (this.script.disableCast) return `(${this.descendInput(left)}) == (${this.descendInput(right)})`;
 
             // When either operand is known to never be a number, only use string comparison to avoid all number parsing.
             if (!left.isSometimesType(InputType.NUMBER_INTERPRETABLE) || !right.isSometimesType(InputType.NUMBER_INTERPRETABLE)) {
@@ -329,8 +328,6 @@ class JSGenerator {
         case InputOpcode.OP_GREATER: {
             const left = node.left;
             const right = node.right;
-            // Todo: Change this to a separate flag?
-            if (this.script.disableCast) return `(${this.descendInput(left)}) > (${this.descendInput(right)})`;
             // When the left operand is a number and the right operand is a number or NaN, we can use >
             if (left.isAlwaysType(InputType.NUMBER_INTERPRETABLE) && right.isAlwaysType(InputType.NUMBER_INTERPRETABLE | InputType.NUMBER_NAN)) {
                 return `(${this.descendInput(left.toType(InputType.NUMBER))} > ${this.descendInput(right.toType(InputType.NUMBER_OR_NAN))})`;
@@ -353,8 +350,6 @@ class JSGenerator {
         case InputOpcode.OP_LESS: {
             const left = node.left;
             const right = node.right;
-            // Todo: Change this to a separate flag?
-            if (this.script.disableCast) return `(${this.descendInput(left)}) < (${this.descendInput(right)})`;
 
             // When the left operand is a number or NaN and the right operand is a number, we can use <
             if (left.isAlwaysType(InputType.NUMBER_INTERPRETABLE | InputType.NUMBER_NAN) && right.isAlwaysType(InputType.NUMBER_INTERPRETABLE)) {

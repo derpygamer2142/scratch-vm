@@ -160,10 +160,7 @@ class IROptimizer {
             return state.getVariableType(inputs.variable) & script.getVariableHint(inputs.variable.id);
         
         case InputOpcode.LIST_GET:
-            // Todo: Check procedures for types recursively?
             // Determining type information for lists would be a pain so we just trust what the type hint says.
-            // console.log(this.ir.entry.getVariableHint(inputs.list.id), this.ir.entry);
-            // current procedure isn't stored, this won't work
             return InputType.ANY & script.getVariableHint(inputs.list.id);
 
         case InputOpcode.ADDON_CALL:
@@ -425,7 +422,6 @@ class IROptimizer {
 
             const canBeNaN = function () {
                 if (!script?.relaxedMath) {
-                    // These relaxations are a bit dangerous and completely arbitrary. I just don't like how easy it is for NaN to come from divison.
                     // (-)0 / (-)0 = NaN
                     if ((leftType & InputType.NUMBER_ANY_ZERO) && (rightType & InputType.NUMBER_ANY_ZERO)) return true;
                     // (-)0 / NaN = NaN
